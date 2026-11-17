@@ -20,6 +20,7 @@ import math
 import os
 import queue
 import re
+import shutil
 import sys
 import time
 import urllib.request
@@ -341,36 +342,121 @@ def choose_device(cfg):
 
 # ----------------------------- модель ---------------------------------------
 
+def _model_is_complete(path):
+    """Папка модели считается целой, только если на месте ключевые файлы.
+    Недокачанная/недораспакованная модель (закрыли программу во время
+    первой загрузки) приводит к ошибке «Failed to create a model»."""
+    if not os.path.isdir(path):
+        return False
+    required = [
+        os.path.join("am", "final.mdl"),
+        os.path.join("conf", "mfcc.conf"),
+        os.path.join("conf", "model.conf"),
+    ]
+    return all(os.path.isfile(os.path.join(path, r)) for r in required) and \
+        os.path.isdir(os.path.join(path, "graph"))
+
+
+def _download_model(path):
+    """Скачивает и распаковывает модель во временную папку, затем одним
+    переименованием кладёт на место — так не останется «полумодели»."""
+    os.makedirs(MODELS_DIR, exist_ok=True)
+    zip_path = path + ".zip.part"
+    tmp_dir = path + ".tmp"
+    shutil.rmtree(tmp_dir, ignore_errors=True)
+    print(f"Скачиваю модель распознавания {MODEL_NAME} (один раз)...")
+
+    def progress(blocks, block_size, total):
+        if total > 0:
+            done = min(100, blocks * block_size * 100 // total)
+            sys.stdout.write(f"\r  {done}%")
+            sys.stdout.flush()
+
+    try:
+        urllib.request.urlretrieve(MODEL_URL, zip_path, progress)
+        print("\nРаспаковываю...")
+        with zipfile.ZipFile(zip_path) as z:
+            z.extractall(tmp_dir)
+        os.remove(zip_path)
+        inner = os.path.join(tmp_dir, MODEL_NAME)   # внутри архива — папка с именем модели
+        src = inner if os.path.isdir(inner) else tmp_dir
+        shutil.rmtree(path, ignore_errors=True)
+        os.replace(src, path)
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        return True
+    except Exception as e:
+        print(f"\nНе удалось скачать модель: {e}")
+        print(f"Скачайте вручную {MODEL_URL}")
+        print(f"и распакуйте в папку {MODELS_DIR}")
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        try:
+            os.remove(zip_path)
+        except OSError:
+            pass
+        return False
+
+
+def _ascii_path(path):
+    """Vosk на Windows не открывает пути с кириллицей. Если в пути есть
+    не-ASCII символы, берём короткое 8.3-имя (оно всегда ASCII)."""
+    try:
+        path.encode("ascii")
+        return path
+    except UnicodeEncodeError:
+        pass
+    if os.name == "nt":
+        try:
+            import ctypes
+            buf = ctypes.create_unicode_buffer(32768)
+            if ctypes.windll.kernel32.GetShortPathNameW(path, buf, len(buf)):
+                short = buf.value
+                try:
+                    short.encode("ascii")
+                    return short
+                except UnicodeEncodeError:
+                    pass
+        except Exception:
+            pass
+    return None
+
+
+def _load_from_safe_path(path):
+    """Возвращает Model, при необходимости копируя модель в ASCII-путь."""
+    safe = _ascii_path(path)
+    if safe is None:
+        # Короткие имена отключены — кладём копию в C:\ProgramData (или temp).
+        root = os.environ.get("PROGRAMDATA") or os.environ.get("SystemDrive", "C:") + "\\"
+        safe = os.path.join(root, "voice_trigger_model", MODEL_NAME)
+        if not _model_is_complete(safe):
+            shutil.rmtree(safe, ignore_errors=True)
+            os.makedirs(os.path.dirname(safe), exist_ok=True)
+            shutil.copytree(path, safe)
+    return Model(safe)
+
+
 def ensure_model():
     global _model
     if _model is not None:
         return _model
     path = os.path.join(MODELS_DIR, MODEL_NAME)
-    if not os.path.isdir(path):
-        os.makedirs(MODELS_DIR, exist_ok=True)
-        zip_path = path + ".zip"
-        print(f"Скачиваю модель распознавания {MODEL_NAME} (один раз)...")
 
-        def progress(blocks, block_size, total):
-            if total > 0:
-                done = min(100, blocks * block_size * 100 // total)
-                sys.stdout.write(f"\r  {done}%")
-                sys.stdout.flush()
-
-        try:
-            urllib.request.urlretrieve(MODEL_URL, zip_path, progress)
-            print("\nРаспаковываю...")
-            with zipfile.ZipFile(zip_path) as z:
-                z.extractall(MODELS_DIR)
-            os.remove(zip_path)
-        except Exception as e:
-            print(f"\nНе удалось скачать модель: {e}")
-            print(f"Скачайте вручную {MODEL_URL}")
-            print(f"и распакуйте в папку {MODELS_DIR}")
+    if not _model_is_complete(path):
+        if os.path.isdir(path):
+            print("Папка модели повреждена или неполная — скачиваю заново.")
+        if not _download_model(path):
             return None
+
     SetLogLevel(-1)
     print("Загружаю модель...")
-    _model = Model(path)
+    try:
+        _model = _load_from_safe_path(path)
+    except Exception as e:
+        # Последний шанс: модель битая — удаляем, качаем заново, пробуем ещё раз.
+        print(f"Не удалось загрузить модель ({e}). Перекачиваю...")
+        shutil.rmtree(path, ignore_errors=True)
+        if not _download_model(path):
+            return None
+        _model = _load_from_safe_path(path)
     return _model
 
 
