@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.idea/
+.vscode/
+
+# PyInstaller
+build/
+dist/
+# ВАЖНО: *.spec из стандартного Python-шаблона НЕ добавляйте,
+# иначе потеряете voice_trigger_bg.spec
+
+# Модели Vosk (скачиваются при первом запуске)
+models/
+*.zip
+
+# Данные пользователя
+config.json
+*.log

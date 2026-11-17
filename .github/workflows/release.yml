@@ -1,0 +1,40 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Build exe
+        run: pyinstaller --clean voice_trigger_bg.spec
+
+      - name: Package
+        shell: pwsh
+        run: |
+          Copy-Item config.example.json dist/
+          Copy-Item README.md dist/
+          Compress-Archive -Path dist/* -DestinationPath "voice-trigger-${{ github.ref_name }}-win64.zip"
+          (Get-FileHash "voice-trigger-${{ github.ref_name }}-win64.zip" -Algorithm SHA256).Hash | Out-File sha256.txt
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            voice-trigger-*.zip
+            sha256.txt
+          generate_release_notes: true
