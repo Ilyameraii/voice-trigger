@@ -86,7 +86,6 @@ import threading
 import webbrowser
 
 import voice_trigger as vt
-from vosk import KaldiRecognizer
 
 if not CONSOLE_MODE:
     import pystray
@@ -128,7 +127,7 @@ def config_stamp():
 def run(cfg, model, stamp):
     """Слушает, пока не выйдут из программы или не изменится config.json."""
     device = vt.resolve_device(cfg)
-    recognizer = KaldiRecognizer(model, vt.SAMPLE_RATE)
+    recognizer = vt.make_recognizer(model, cfg["phrases"], log)
     q = queue.Queue()
     last_fire = {}
 
@@ -161,12 +160,12 @@ def run(cfg, model, stamp):
                 continue
 
             if recognizer.AcceptWaveform(data):
-                text = json.loads(recognizer.Result()).get("text", "")
+                text = vt.clean_text(json.loads(recognizer.Result()).get("text", ""))
                 if text:
                     log(f"Услышал: {text}")
                     fire_if_matched(text)
             else:
-                partial = json.loads(recognizer.PartialResult()).get("partial", "")
+                partial = vt.clean_text(json.loads(recognizer.PartialResult()).get("partial", ""))
                 if partial and fire_if_matched(partial):
                     recognizer.Reset()
 
@@ -340,7 +339,7 @@ def settings_main():
 def monitor_run(cfg, model, stamp):
     """Показывает полоску громкости и распознанный текст. Ссылки НЕ открывает."""
     device = vt.resolve_device(cfg)
-    recognizer = KaldiRecognizer(model, vt.SAMPLE_RATE)
+    recognizer = vt.make_recognizer(model, cfg["phrases"], vt.say)
     q = queue.Queue()
     last_seen = {}
     level = 0.0
@@ -371,12 +370,12 @@ def monitor_run(cfg, model, stamp):
             partial = ""
 
             if recognizer.AcceptWaveform(data):
-                text = json.loads(recognizer.Result()).get("text", "")
+                text = vt.clean_text(json.loads(recognizer.Result()).get("text", ""))
                 if text:
                     vt.say(f"Услышал: {text}")
                     show_matches(text)
             else:
-                partial = json.loads(recognizer.PartialResult()).get("partial", "")
+                partial = vt.clean_text(json.loads(recognizer.PartialResult()).get("partial", ""))
                 if partial and show_matches(partial):
                     recognizer.Reset()
                     partial = ""

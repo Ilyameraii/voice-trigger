@@ -226,6 +226,55 @@ def find_matches(text, phrases):
     return [p for p in phrases if p["words"] and set(p["words"]) <= heard]
 
 
+def clean_text(text):
+    """Убирает из результата распознавания служебный маркер [unk]."""
+    return " ".join(text.replace("[unk]", " ").split())
+
+
+def build_grammar(model, phrases):
+    """Список фраз для Vosk-грамматики + слова, которых нет в словаре модели."""
+    sentences, missing = [], set()
+    for p in phrases:
+        src = p.get("text") or " ".join(p["words"])
+        words = re.findall(r"\w+", src.lower().replace("ё", "е"))
+        if not words:
+            continue
+        for w in words:
+            try:
+                if model.vosk_model_find_word(w) == -1:
+                    missing.add(w)
+            except Exception:
+                pass  # старая версия vosk — проверку пропускаем
+        sentence = " ".join(words)
+        if sentence not in sentences:
+            sentences.append(sentence)
+    return sentences, sorted(missing)
+
+
+def make_recognizer(model, phrases, note=print):
+    """Распознаватель, «подогнанный» под добавленные фразы.
+
+    Vosk слушает только ваши фразы (+ [unk] для всего остального), поэтому
+    «открой клод» больше не превращается в «открой глаза». Если слова нет
+    в словаре модели или модель не поддерживает грамматику (большая модель),
+    работает обычное свободное распознавание.
+    """
+    sentences, missing = build_grammar(model, phrases)
+    if missing:
+        note("Слов нет в словаре модели: " + ", ".join(missing) +
+             ". Включаю обычное распознавание. Попробуйте записать слово "
+             "иначе (как оно звучит по-русски).")
+    elif sentences:
+        try:
+            rec = KaldiRecognizer(model, SAMPLE_RATE,
+                                  json.dumps(sentences + ["[unk]"], ensure_ascii=False))
+            note(f"Распознавание подстроено под ваши фразы ({len(sentences)}).")
+            return rec
+        except Exception as e:
+            note(f"Грамматика не поддерживается этой моделью ({e}), обычное распознавание.")
+    return KaldiRecognizer(model, SAMPLE_RATE)
+
+
 # ----------------------------- микрофон -------------------------------------
 
 def list_input_devices():
@@ -471,7 +520,7 @@ def listen(cfg):
         return
 
     device = resolve_device(cfg)
-    recognizer = KaldiRecognizer(model, SAMPLE_RATE)
+    recognizer = make_recognizer(model, cfg["phrases"], say)
     q = queue.Queue()
     last_fire = {}
     level = 0.0
@@ -504,12 +553,12 @@ def listen(cfg):
                 partial = ""
 
                 if recognizer.AcceptWaveform(data):
-                    text = json.loads(recognizer.Result()).get("text", "")
+                    text = clean_text(json.loads(recognizer.Result()).get("text", ""))
                     if text:
                         say(f"Услышал: {text}")
                         fire_if_matched(text)
                 else:
-                    partial = json.loads(recognizer.PartialResult()).get("partial", "")
+                    partial = clean_text(json.loads(recognizer.PartialResult()).get("partial", ""))
                     # Реагируем, не дожидаясь конца фразы
                     if partial and fire_if_matched(partial):
                         recognizer.Reset()
